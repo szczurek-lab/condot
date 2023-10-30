@@ -1,8 +1,10 @@
 #!/usr/bin/python3
 
 # imports
+import wandb
 from pathlib import Path
 import torch
+import torch.nn as nn
 import numpy as np
 from absl import logging
 from tqdm import trange
@@ -14,7 +16,7 @@ from condot.models import condot
 from condot.train.summary import Logger
 from condot.data.utils import cast_loader_to_iterator
 from condot.models.ae import compute_autoencoder_shift
-from condot.utils.helpers import to_device
+from condot.utils.helpers import to_device, get_wandb_run_name
 
 
 def load_lr_scheduler(optim, config):
@@ -209,9 +211,14 @@ def train_autoencoder(outdir, config):
             comps = {k: v.mean().item() for k, v in comps._asdict().items()}
             check_loss(loss)
             logger.log("eval", loss=loss.item(), step=step, **comps)
-
+            wandb.log({"evaluate_loss": loss.item()})
         return loss
 
+    def create_new_wandb_run(run_name: str, config: dict) -> None:
+        wandb.init(project=run_name, config=config)
+        return None
+
+    create_new_wandb_run(run_name=get_wandb_run_name(config), config=config)
     logger = Logger(outdir / "cache/scalars")
     cachedir = outdir / "cache"
     model, optim, loader = load(config, restore=cachedir / "last.pt")
@@ -230,10 +237,16 @@ def train_autoencoder(outdir, config):
     eval_loss = best_eval_loss
 
     ticker = trange(step, n_iters, initial=step, total=n_iters)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+    model.to(device)
+
     for step in ticker:
 
         model.train()
         inputs = next(iterator.train)
+        inputs = to_device(inputs)
         optim.zero_grad()
         loss, comps, _ = model(inputs)
         loss = loss.mean()
@@ -241,6 +254,7 @@ def train_autoencoder(outdir, config):
         loss.backward()
         optim.step()
         check_loss(loss)
+        wandb.log({"training_loss": loss.item()})
 
         if step % config.training.logs_freq == 0:
             # log to logger object
@@ -257,7 +271,6 @@ def train_autoencoder(outdir, config):
 
         if step % config.training.cache_freq == 0:
             torch.save(state_dict(model, optim, step=(step + 1)), cachedir / "last.pt")
-
             logger.flush()
 
         if scheduler is not None:
