@@ -46,6 +46,7 @@ Install condot:
 
 ```
 cd /projects/b1196/ewa_group/condot/
+conda activate /projects/b1196/envs/condot
 pip-compile requirements.in
 pip-sync
 python setup.py develop
